@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DB Connection — TCP에서 Pool, 연결 관리·최적화까지</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0f1a;
+    --panel:#121a2b;
+    --panel-2:#172139;
+    --line:#243049;
+    --line-soft:#1b2438;
+    --text:#e7ecf6;
+    --muted:#8d9bba;
+    --faint:#5e6c8c;
+    --client:#43d6c4;   /* 클라이언트 측 */
+    --server:#f3a957;   /* 서버 측 */
+    --accent:#8493ff;   /* 구조·링크 */
+    --danger:#f3736f;   /* 풀 없음 / 문제 */
+    --ok:#6fe0a4;       /* 정답 / 성공 */
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans KR',sans-serif;
+    --maxw:880px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font-family:var(--sans);line-height:1.72;font-size:16.5px;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(1100px 600px at 80% -8%,rgba(132,147,255,.10),transparent 60%),radial-gradient(900px 500px at -5% 12%,rgba(67,214,196,.07),transparent 55%);
+    background-attachment:fixed;
+  }
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+  /* ---- Hero ---- */
+  .hero{padding:72px 0 40px}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.32em;text-transform:uppercase;color:var(--client);font-weight:700}
+  .hero h1{font-family:var(--mono);font-weight:800;font-size:clamp(28px,5.2vw,46px);line-height:1.12;margin:18px 0 8px;letter-spacing:-.5px}
+  .hero h1 .dim{color:var(--faint)}
+  .hero p.lede{color:var(--muted);font-size:17px;max-width:62ch;margin:14px 0 0}
+  .chain{display:flex;flex-wrap:wrap;gap:8px;margin-top:26px;font-family:var(--mono);font-size:12.5px}
+  .chain span{padding:6px 11px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:rgba(255,255,255,.015)}
+  .chain span b{color:var(--text);font-weight:700}
+  .chain i{color:var(--faint);align-self:center;font-style:normal}
+
+  /* ---- TOC ---- */
+  .toc{margin:34px 0 8px;border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);padding:18px 0}
+  .toc ol{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 26px}
+  .toc a{color:var(--muted);text-decoration:none;font-size:14.5px;display:flex;gap:10px;padding:4px 0;border-bottom:1px dotted transparent}
+  .toc a:hover{color:var(--text)}
+  .toc a em{font-family:var(--mono);color:var(--accent);font-style:normal;font-weight:700;min-width:26px}
+
+  /* ---- Section ---- */
+  section{padding:46px 0;border-top:1px solid var(--line-soft)}
+  .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.2em;color:var(--accent);font-weight:700;display:flex;align-items:center;gap:12px}
+  .eyebrow::after{content:"";height:1px;flex:1;background:linear-gradient(90deg,var(--line),transparent)}
+  h2{font-family:var(--mono);font-weight:800;font-size:clamp(21px,3.4vw,27px);margin:14px 0 4px;letter-spacing:-.3px}
+  h3{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--client);margin:30px 0 6px;letter-spacing:.02em}
+
+  /* one-line summary */
+  .summary{
+    display:flex;gap:13px;align-items:flex-start;margin:20px 0 18px;
+    background:linear-gradient(90deg,rgba(67,214,196,.10),rgba(67,214,196,.02));
+    border:1px solid rgba(67,214,196,.28);border-left:3px solid var(--client);
+    border-radius:10px;padding:14px 16px;
+  }
+  .summary .tag{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--client);white-space:nowrap;padding-top:2px}
+  .summary p{margin:0;font-size:16.5px;font-weight:600}
+
+  p{margin:0 0 14px}
+  .para{color:#dbe2f1}
+  strong{color:#fff;font-weight:600}
+  code.k{font-family:var(--mono);font-size:.86em;background:var(--panel-2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#cdd8f2}
+
+  /* WHY block */
+  .why{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:18px 20px;margin:18px 0}
+  .why .why-h{font-family:var(--mono);font-size:11.5px;font-weight:700;letter-spacing:.18em;color:var(--accent);margin-bottom:10px}
+  .why p:last-child{margin-bottom:0}
+  .why ul{margin:8px 0 0;padding-left:0;list-style:none}
+  .why li{position:relative;padding-left:20px;margin:9px 0;color:#d4ddf0}
+  .why li::before{content:"▸";position:absolute;left:0;color:var(--accent)}
+  .why li b{color:#fff}
+
+  /* figure */
+  figure{margin:26px 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 18px 14px;overflow:hidden}
+  figure svg{display:block;width:100%;height:auto}
+  figcaption{font-family:var(--mono);font-size:12px;color:var(--faint);text-align:center;margin-top:12px;letter-spacing:.02em}
+  figcaption b{color:var(--muted)}
+
+  /* table */
+  .tablewrap{overflow-x:auto;margin:20px 0;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line-soft)}
+  thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;color:var(--accent);background:var(--panel-2);text-transform:uppercase}
+  tbody tr:last-child td{border-bottom:none}
+  td code{font-family:var(--mono);font-size:12.5px;color:var(--client)}
+  td.muted{color:var(--muted)}
+
+  /* code snippet */
+  pre{background:#080c15;border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow-x:auto;margin:18px 0;font-family:var(--mono);font-size:13px;line-height:1.65;color:#cdd8f2}
+  pre .c{color:var(--faint)}
+  pre .kw{color:var(--server)}
+  pre .fn{color:var(--client)}
+  pre .num{color:var(--accent)}
+
+  .note{font-size:14px;color:var(--muted);border-left:2px solid var(--server);padding:2px 0 2px 14px;margin:16px 0}
+  .note b{color:var(--server)}
+
+  /* ---- Quiz ---- */
+  .quizhead{padding-top:46px}
+  details.q{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:14px 0;overflow:hidden}
+  details.q[open]{border-color:rgba(111,224,164,.4)}
+  details.q summary{list-style:none;cursor:pointer;padding:16px 18px;display:flex;gap:14px;align-items:flex-start;font-weight:600;color:#eef2fb}
+  details.q summary::-webkit-details-marker{display:none}
+  details.q summary .qn{font-family:var(--mono);font-weight:800;color:var(--accent);font-size:14px;flex-shrink:0}
+  details.q summary .reveal{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--ok);border:1px solid rgba(111,224,164,.35);border-radius:999px;padding:4px 11px;white-space:nowrap;align-self:center}
+  details.q[open] summary .reveal{opacity:.45}
+  details.q[open] summary .reveal::after{content:" ✓"}
+  .answer{padding:0 18px 18px 50px;border-top:1px solid var(--line-soft);margin-top:2px}
+  .answer .alabel{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--ok);font-weight:700;margin:14px 0 8px}
+  .answer p{font-size:14.5px;color:#d7dff0;margin:0 0 10px}
+  .answer p:last-child{margin-bottom:0}
+  .answer code.k{background:#080c15}
+
+  /* ---- Footer ---- */
+  footer{border-top:1px solid var(--line);padding:40px 0 70px;margin-top:30px}
+  footer h2{font-size:18px;color:var(--text)}
+  .refs{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:10px}
+  .refs li{font-size:14px;color:var(--muted)}
+  .refs a{color:var(--accent);text-decoration:none;font-family:var(--mono);font-size:13px;word-break:break-all}
+  .refs a:hover{text-decoration:underline}
+  .refs li span{display:block;color:var(--faint);font-size:12.5px;margin-top:2px}
+  .sig{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:26px;letter-spacing:.04em}
+
+  /* legend pill used in figures intro */
+  .legend{display:flex;gap:18px;font-family:var(--mono);font-size:12px;color:var(--muted);margin:-4px 0 4px;flex-wrap:wrap}
+  .legend i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:-1px}
+
+  @media (max-width:620px){
+    body{font-size:16px}
+    .toc ol{grid-template-columns:1fr}
+    .summary{flex-direction:column;gap:6px}
+    .answer{padding-left:18px}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    section,.hero{animation:rise .6s ease both}
+    @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== HERO ===================== -->
+  <header class="hero">
+    <div class="kicker">Backend Knowledge · Database Connections</div>
+    <h1>DB 연결의 일생<span class="dim">:</span><br>TCP <span class="dim">→</span> Connection Pool <span class="dim">→</span> 관리·최적화</h1>
+    <p class="lede">쿼리 한 줄을 보내기까지 무슨 일이 일어나고, 왜 그 비용을 매번 치르면 안 되며,
+    풀(pool)이 그것을 어떻게 해결하고, 잘못 튜닝하면 어떻게 망가지는지 — 하나의 인과 사슬로 정리한 문서입니다.</p>
+    <div class="chain">
+      <span><b>소켓 비용</b></span><i>→</i>
+      <span><b>재사용(Pool)</b></span><i>→</i>
+      <span><b>연결 건강성</b></span><i>→</i>
+      <span><b>사이징</b></span><i>→</i>
+      <span><b>다중화</b></span>
+    </div>
+  </header>
+
+  <!-- ===================== TOC ===================== -->
+  <nav class="toc" aria-label="목차">
+    <ol>
+      <li><a href="#s1"><em>01</em> TCP 연결과 소켓</a></li>
+      <li><a href="#s2"><em>02</em> 연결 수립의 진짜 비용</a></li>
+      <li><a href="#s3"><em>03</em> Connection Pool란</a></li>
+      <li><a href="#s4"><em>04</em> 풀의 동작 메커니즘</a></li>
+      <li><a href="#s5"><em>05</em> 연결 관리와 건강성</a></li>
+      <li><a href="#s6"><em>06</em> 풀 사이징과 최적화</a></li>
+      <li><a href="#s7"><em>07</em> 외부 풀러와 다중화</a></li>
+      <li><a href="#quiz"><em>★</em> 확인 문제 (8)</a></li>
+    </ol>
+  </nav>
+
+  <!-- ===================== 01 ===================== -->
+  <section id="s1">
+    <div class="eyebrow">01 — TCP CONNECTION</div>
+    <h2>TCP 연결과 소켓</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>DB 연결은 클라이언트와 서버 사이에 맺어진 하나의 TCP 소켓이며, 데이터를 주고받기 전에 먼저 3-way handshake로 신뢰성 있는 양방향 통로를 세운다.</p>
+    </div>
+
+    <p class="para">애플리케이션이 데이터베이스에 "연결한다"는 것은, 운영체제 수준에서 보면 <strong>(클라이언트 IP, 클라이언트 포트, 서버 IP, 서버 포트)</strong> 네 값으로 식별되는 TCP 소켓 하나를 여는 일이다. 서버는 정해진 포트에서 듣고 있다(PostgreSQL <code class="k">5432</code>, MySQL <code class="k">3306</code>). TCP는 신뢰성·순서보장·흐름제어를 제공하는 연결 지향 프로토콜이므로, 실제 데이터 한 바이트를 보내기 전에 양쪽이 시퀀스 번호를 교환하며 통로를 합의하는 <strong>3-way handshake</strong>(SYN → SYN-ACK → ACK)를 거친다. 이 핸드셰이크가 끝나야 비로소 그 위에서 DB 고유의 대화가 시작된다.</p>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>왜 TCP인가</b> — DB 쿼리·결과는 손실·재정렬되면 안 되는 데이터다. TCP는 재전송·순서보장으로 이를 보장하므로, 거의 모든 DB가 기본 전송 계층으로 TCP를 쓴다(같은 호스트면 Unix domain socket을 쓰기도 한다).</li>
+        <li><b>핸드셰이크의 의미</b> — SYN/SYN-ACK/ACK는 양쪽의 초기 시퀀스 번호와 윈도우 크기를 합의하는 과정이다. 즉 <b>최소 1 RTT(왕복 지연)</b>를 "데이터 전송 이전"에 무조건 지불한다.</li>
+        <li><b>연결은 상태다</b> — 한번 맺힌 소켓은 명시적으로 닫기(FIN/ACK 4-way 또는 RST) 전까지 양쪽 OS의 연결 테이블에 남아 자원을 점유한다. 이 "상태성"이 뒤의 풀링·누수·죽은 연결 문제의 근원이다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 02 ===================== -->
+  <section id="s2">
+    <div class="eyebrow">02 — THE REAL COST</div>
+    <h2>연결 수립의 진짜 비용</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>새 DB 연결 하나의 비용은 TCP 핸드셰이크가 전부가 아니라 TLS + 인증 + 세션 초기화로 이어지는 여러 번의 네트워크 왕복, 그리고 연결마다 서버가 프로세스/스레드를 띄우는 유지 비용까지 포함한다.</p>
+    </div>
+
+    <p class="para">"연결이 비싸다"는 말의 실체를 분해해 보면 두 종류의 비용이 있다. 첫째는 <strong>수립 비용</strong>: TCP 1 RTT 위에 TLS 핸드셰이크(TLS 1.2면 +2 RTT, 1.3이면 +1 RTT)가 얹히고, 그 다음 DB 프로토콜 핸드셰이크 — PostgreSQL의 <code class="k">StartupMessage</code> → SCRAM-SHA-256 인증 왕복 → <code class="k">AuthenticationOk</code>/<code class="k">ParameterStatus</code>/<code class="k">ReadyForQuery</code>, MySQL은 서버가 먼저 greeting을 보내는 식 — 이 또 여러 왕복을 더한다. 결과적으로 첫 쿼리를 보내기도 전에 <strong>4~6번의 왕복</strong>이 일어날 수 있다. 둘째는 <strong>유지 비용</strong>: PostgreSQL은 연결마다 OS 프로세스를 fork하고(process-per-connection), MySQL은 스레드를 할당한다. 연결이 놀고 있어도 메모리와 슬롯을 먹으며, <code class="k">max_connections</code>를 넘기면 <code class="k">FATAL: too many clients</code>로 거절된다.</p>
+
+    <div class="legend">
+      <span><i style="background:var(--client)"></i>클라이언트</span>
+      <span><i style="background:var(--server)"></i>서버</span>
+      <span><i style="background:var(--accent)"></i>왕복(RTT) 구간</span>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 470" role="img" aria-label="연결 수립 시퀀스: TCP, TLS, DB 프로토콜 핸드셰이크">
+        <!-- lifelines -->
+        <text x="150" y="26" font-family="JetBrains Mono" font-size="14" font-weight="700" fill="var(--client)" text-anchor="middle">CLIENT</text>
+        <text x="610" y="26" font-family="JetBrains Mono" font-size="14" font-weight="700" fill="var(--server)" text-anchor="middle">DB SERVER</text>
+        <line x1="150" y1="40" x2="150" y2="450" stroke="var(--client)" stroke-width="2" opacity=".5"/>
+        <line x1="610" y1="40" x2="610" y2="450" stroke="var(--server)" stroke-width="2" opacity=".5"/>
+
+        <!-- RTT bracket TCP -->
+        <rect x="34" y="58" width="6" height="56" rx="3" fill="var(--accent)" opacity=".35"/>
+        <text x="22" y="90" font-family="JetBrains Mono" font-size="10" fill="var(--accent)" transform="rotate(-90 22 90)" text-anchor="middle">TCP · 1 RTT</text>
+
+        <!-- TCP arrows -->
+        <g font-family="JetBrains Mono" font-size="12" fill="var(--text)">
+          <line x1="150" y1="70" x2="600" y2="76" stroke="var(--client)" stroke-width="1.6" marker-end="url(#ac)"/>
+          <text x="375" y="64" text-anchor="middle" fill="var(--muted)">SYN</text>
+          <line x1="610" y1="92" x2="160" y2="98" stroke="var(--server)" stroke-width="1.6" marker-end="url(#as)"/>
+          <text x="385" y="86" text-anchor="middle" fill="var(--muted)">SYN · ACK</text>
+          <line x1="150" y1="114" x2="600" y2="120" stroke="var(--client)" stroke-width="1.6" marker-end="url(#ac)"/>
+          <text x="375" y="134" text-anchor="middle" fill="var(--muted)">ACK</text>
+        </g>
+
+        <!-- TLS bracket -->
+        <rect x="34" y="146" width="6" height="74" rx="3" fill="var(--accent)" opacity=".35"/>
+        <text x="22" y="186" font-family="JetBrains Mono" font-size="10" fill="var(--accent)" transform="rotate(-90 22 186)" text-anchor="middle">TLS · +1~2 RTT</text>
+        <g font-family="JetBrains Mono" font-size="11.5" fill="var(--muted)">
+          <line x1="150" y1="162" x2="600" y2="166" stroke="var(--client)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ac)"/>
+          <text x="375" y="156" text-anchor="middle">ClientHello</text>
+          <line x1="610" y1="184" x2="160" y2="188" stroke="var(--server)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#as)"/>
+          <text x="385" y="178" text-anchor="middle">ServerHello · 인증서</text>
+          <line x1="150" y1="206" x2="600" y2="210" stroke="var(--client)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ac)"/>
+          <text x="375" y="224" text-anchor="middle">키 교환 · Finished</text>
+        </g>
+
+        <!-- DB protocol bracket -->
+        <rect x="34" y="246" width="6" height="118" rx="3" fill="var(--accent)" opacity=".35"/>
+        <text x="22" y="305" font-family="JetBrains Mono" font-size="10" fill="var(--accent)" transform="rotate(-90 22 305)" text-anchor="middle">DB 프로토콜 · 인증</text>
+        <g font-family="JetBrains Mono" font-size="11.5" fill="var(--muted)">
+          <line x1="150" y1="262" x2="600" y2="266" stroke="var(--client)" stroke-width="1.6" marker-end="url(#ac)"/>
+          <text x="375" y="256" text-anchor="middle">StartupMessage (user, db)</text>
+          <line x1="610" y1="284" x2="160" y2="288" stroke="var(--server)" stroke-width="1.6" marker-end="url(#as)"/>
+          <text x="385" y="278" text-anchor="middle">Auth 요청 (SCRAM-SHA-256)</text>
+          <line x1="150" y1="306" x2="600" y2="310" stroke="var(--client)" stroke-width="1.6" marker-end="url(#ac)"/>
+          <text x="375" y="300" text-anchor="middle">SCRAM 응답</text>
+          <line x1="610" y1="346" x2="160" y2="350" stroke="var(--server)" stroke-width="1.6" marker-end="url(#as)"/>
+          <text x="385" y="328" text-anchor="middle">AuthOk · ParameterStatus</text>
+          <text x="385" y="342" text-anchor="middle">BackendKeyData · ReadyForQuery</text>
+        </g>
+
+        <!-- finally query -->
+        <line x1="40" y1="386" x2="720" y2="386" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 4"/>
+        <line x1="150" y1="410" x2="600" y2="414" stroke="var(--ok)" stroke-width="2" marker-end="url(#aok)"/>
+        <text x="375" y="404" font-family="JetBrains Mono" font-size="12.5" font-weight="700" fill="var(--ok)" text-anchor="middle">… 이제서야 첫 SELECT 쿼리</text>
+        <text x="375" y="440" font-family="JetBrains Mono" font-size="11" fill="var(--faint)" text-anchor="middle">연결 1개 = 핸드셰이크 4~6 RTT + 서버 프로세스/스레드 fork</text>
+
+        <defs>
+          <marker id="ac" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--client)"/></marker>
+          <marker id="as" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--server)"/></marker>
+          <marker id="aok" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--ok)"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>그림 1.</b> 새 연결 하나를 세우는 전체 왕복 — 첫 쿼리 전에 이미 수십 ms가 지나간다</figcaption>
+    </figure>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>RTT는 곱해진다</b> — 각 왕복은 네트워크 지연에 비례한다. 같은 리전 수 ms라도 핸드셰이크가 4~6회면 수십 ms. 초당 수천 요청에서 매 요청마다 새 연결을 맺으면 이 지연이 그대로 처리량 천장이 된다.</li>
+        <li><b>유지 비용이 더 치명적일 때가 많다</b> — PostgreSQL의 process-per-connection 모델에서 수백 개의 연결은 수 GB 메모리와 컨텍스트 스위칭으로 이어진다. 그래서 "연결 수" 자체가 DB의 확장 한계가 된다.</li>
+        <li><b>서버리스가 이 문제를 극대화한다</b> — Lambda처럼 인보케이션마다 연결을 새로 여는 구조는 동시 실행 수만큼 연결을 폭증시켜 순식간에 <code class="k">max_connections</code>를 고갈시킨다. (→ 07장 외부 풀러)</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 03 ===================== -->
+  <section id="s3">
+    <div class="eyebrow">03 — CONNECTION POOL</div>
+    <h2>Connection Pool란</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>커넥션 풀은 미리 맺어둔 연결들을 보관해 두고 빌려주고(borrow) 돌려받으며(return) 재사용하는 캐시로, 비싼 연결 수립 비용을 요청마다 치르지 않게 해준다.</p>
+    </div>
+
+    <p class="para">연결 수립이 비싸다면 답은 단순하다 — <strong>매번 새로 만들지 말고, 만들어 둔 것을 재사용하자.</strong> 커넥션 풀은 일정 개수의 살아있는 연결을 메모리에 보관하는 자료구조다. 애플리케이션은 풀에서 연결을 <strong>빌려(acquire)</strong> 쿼리를 실행하고, 끝나면 풀에 <strong>반납(return)</strong>한다. 여기서 가장 중요한 개념 전환: 풀 환경에서 <code class="k">connection.close()</code>는 TCP를 실제로 끊는 것이 아니라 <strong>"풀에 돌려준다"</strong>는 의미다. 연결의 비싼 부분(핸드셰이크·인증·프로세스 fork)은 풀이 처음 채워질 때 한 번만 치르고, 이후 수천 건의 요청이 그 비용을 공유한다. 대표 구현으로 Java의 HikariCP, Python의 SQLAlchemy QueuePool, Go의 <code class="k">database/sql</code> 내장 풀, Django의 <code class="k">CONN_MAX_AGE</code> 등이 있다.</p>
+
+    <div class="legend">
+      <span><i style="background:var(--danger)"></i>매번 핸드셰이크</span>
+      <span><i style="background:var(--ok)"></i>재사용(저렴)</span>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 300" role="img" aria-label="풀 없음과 풀 있음의 요청당 비용 비교">
+        <text x="190" y="26" font-family="JetBrains Mono" font-size="13" font-weight="700" fill="var(--danger)" text-anchor="middle">풀 없음 — 요청마다 새 연결</text>
+        <text x="575" y="26" font-family="JetBrains Mono" font-size="13" font-weight="700" fill="var(--ok)" text-anchor="middle">풀 사용 — 한번 맺고 재사용</text>
+        <line x1="380" y1="40" x2="380" y2="290" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 5"/>
+
+        <!-- without pool: 4 requests each with full handshake -->
+        <g font-family="JetBrains Mono" font-size="10" fill="var(--text)">
+          <g transform="translate(40,55)">
+            <rect width="135" height="22" rx="5" fill="var(--danger)" opacity=".85"/><text x="67" y="15" text-anchor="middle" fill="#1a0b0b" font-weight="700">handshake+auth</text>
+            <rect x="140" y="0" width="55" height="22" rx="5" fill="#2a3550"/><text x="167" y="15" text-anchor="middle" fill="var(--text)">query</text>
+          </g>
+          <g transform="translate(40,90)">
+            <rect width="135" height="22" rx="5" fill="var(--danger)" opacity=".85"/><text x="67" y="15" text-anchor="middle" fill="#1a0b0b" font-weight="700">handshake+auth</text>
+            <rect x="140" y="0" width="55" height="22" rx="5" fill="#2a3550"/><text x="167" y="15" text-anchor="middle" fill="var(--text)">query</text>
+          </g>
+          <g transform="translate(40,125)">
+            <rect width="135" height="22" rx="5" fill="var(--danger)" opacity=".85"/><text x="67" y="15" text-anchor="middle" fill="#1a0b0b" font-weight="700">handshake+auth</text>
+            <rect x="140" y="0" width="55" height="22" rx="5" fill="#2a3550"/><text x="167" y="15" text-anchor="middle" fill="var(--text)">query</text>
+          </g>
+          <g transform="translate(40,160)">
+            <rect width="135" height="22" rx="5" fill="var(--danger)" opacity=".85"/><text x="67" y="15" text-anchor="middle" fill="#1a0b0b" font-weight="700">handshake+auth</text>
+            <rect x="140" y="0" width="55" height="22" rx="5" fill="#2a3550"/><text x="167" y="15" text-anchor="middle" fill="var(--text)">query</text>
+          </g>
+          <text x="137" y="208" text-anchor="middle" fill="var(--danger)" font-size="11">총 비용 ≈ 4 × (핸드셰이크 + 쿼리)</text>
+          <text x="137" y="226" text-anchor="middle" fill="var(--faint)" font-size="10">+ 연결 4개분 서버 프로세스</text>
+        </g>
+
+        <!-- with pool -->
+        <g font-family="JetBrains Mono" font-size="10" fill="var(--text)">
+          <g transform="translate(420,55)">
+            <rect width="135" height="22" rx="5" fill="var(--server)" opacity=".55"/><text x="67" y="15" text-anchor="middle" fill="#1a1206" font-weight="700">풀 워밍업 (1회)</text>
+          </g>
+          <g transform="translate(420,90)">
+            <rect width="55" height="22" rx="5" fill="var(--ok)" opacity=".8"/><text x="27" y="15" text-anchor="middle" fill="#06180f" font-weight="700">query</text>
+          </g>
+          <g transform="translate(420,125)">
+            <rect width="55" height="22" rx="5" fill="var(--ok)" opacity=".8"/><text x="27" y="15" text-anchor="middle" fill="#06180f" font-weight="700">query</text>
+          </g>
+          <g transform="translate(420,160)">
+            <rect width="55" height="22" rx="5" fill="var(--ok)" opacity=".8"/><text x="27" y="15" text-anchor="middle" fill="#06180f" font-weight="700">query</text>
+          </g>
+          <text x="487" y="100" fill="var(--faint)" font-size="10">↺ 재사용</text>
+          <text x="487" y="135" fill="var(--faint)" font-size="10">↺ 재사용</text>
+          <text x="487" y="170" fill="var(--faint)" font-size="10">↺ 재사용</text>
+          <text x="575" y="208" text-anchor="middle" fill="var(--ok)" font-size="11">총 비용 ≈ 1 × 핸드셰이크 + N × 쿼리</text>
+          <text x="575" y="226" text-anchor="middle" fill="var(--faint)" font-size="10">연결 수는 작게 유지</text>
+        </g>
+
+        <line x1="40" y1="250" x2="720" y2="250" stroke="var(--line-soft)"/>
+        <text x="380" y="278" text-anchor="middle" font-family="JetBrains Mono" font-size="11.5" font-weight="700" fill="var(--text)">핵심: 비싼 비용을 "요청당"에서 "풀 수명당"으로 옮긴다</text>
+      </svg>
+      <figcaption><b>그림 2.</b> 풀이 없으면 비용이 요청 수에 비례하고, 풀이 있으면 거의 상수로 수렴한다</figcaption>
+    </figure>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>비용의 분할 상환(amortization)</b> — 핸드셰이크라는 고정 비용을 풀의 수명 동안 발생하는 모든 요청이 나눠 갖는다. 요청이 많을수록 요청당 연결 비용은 0에 수렴한다.</li>
+        <li><b>연결 수 상한 통제</b> — 풀은 동시에 열리는 연결 수에 천장(<code class="k">maximumPoolSize</code>)을 둔다. 트래픽이 폭증해도 DB가 받는 연결 수가 폭증하지 않아, <code class="k">max_connections</code> 고갈을 막는다.</li>
+        <li><b>예측 가능성</b> — 연결 수립 지연(꼬리 지연)이 요청 경로에서 사라지므로 p99 레이턴시가 안정된다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 04 ===================== -->
+  <section id="s4">
+    <div class="eyebrow">04 — POOL MECHANICS</div>
+    <h2>풀의 동작 메커니즘</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>풀은 "유휴 연결이 있으면 빌려주고, 없으면 상한까지 새로 만들고, 상한에 닿으면 타임아웃까지 대기시키며, 반납 시엔 세션 상태를 리셋해 되돌리는" 규칙으로 동작한다.</p>
+    </div>
+
+    <p class="para">풀에 연결을 빌려달라는 요청(acquire)이 들어오면 세 갈래로 갈린다. ① <strong>유휴(idle) 연결이 있으면</strong> 그것을 건넨다(선택적으로 빌려주기 전 유효성 검사). ② <strong>유휴가 없지만 <code class="k">maximumPoolSize</code> 미만이면</strong> 새 연결을 만들어 건넨다. ③ <strong>이미 상한에 도달했으면</strong> <code class="k">connectionTimeout</code>만큼 대기하며, 그 안에 누가 반납하지 않으면 예외를 던진다(대기 큐). 사용이 끝나 반납될 때 풀은 그냥 꽂아 넣지 않고 <strong>세션 상태를 리셋</strong>한다 — 열린 트랜잭션을 롤백하고, 세션 변수를 초기화해 "깨끗한 연결"을 다음 사용자에게 보장한다.</p>
+
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>idle (대기 중)</span>
+      <span><i style="background:var(--server)"></i>in-use (대여 중)</span>
+      <span><i style="background:var(--accent)"></i>대기 큐</span>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 330" role="img" aria-label="커넥션 풀 내부 상태와 빌림/반납 흐름">
+        <!-- app side -->
+        <rect x="30" y="60" width="150" height="210" rx="12" fill="var(--panel-2)" stroke="var(--line)"/>
+        <text x="105" y="48" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="var(--client)" text-anchor="middle">애플리케이션 스레드</text>
+        <g font-family="JetBrains Mono" font-size="10.5" fill="var(--text)">
+          <rect x="48" y="78" width="114" height="26" rx="6" fill="#1d2840"/><text x="105" y="95" text-anchor="middle">T1 · 쿼리 중</text>
+          <rect x="48" y="112" width="114" height="26" rx="6" fill="#1d2840"/><text x="105" y="129" text-anchor="middle">T2 · 쿼리 중</text>
+          <rect x="48" y="146" width="114" height="26" rx="6" fill="#1d2840"/><text x="105" y="163" text-anchor="middle">T3 · 대기</text>
+          <rect x="48" y="180" width="114" height="26" rx="6" fill="#1d2840"/><text x="105" y="197" text-anchor="middle">T4 · 대기</text>
+        </g>
+
+        <!-- pool box -->
+        <rect x="300" y="50" width="200" height="230" rx="14" fill="var(--panel)" stroke="var(--accent)" stroke-opacity=".5"/>
+        <text x="400" y="40" font-family="JetBrains Mono" font-size="12.5" font-weight="800" fill="var(--accent)" text-anchor="middle">CONNECTION POOL</text>
+        <text x="400" y="74" font-family="JetBrains Mono" font-size="10" fill="var(--faint)" text-anchor="middle">max = 4</text>
+        <!-- connections -->
+        <g>
+          <circle cx="345" cy="110" r="16" fill="var(--server)"/><text x="345" y="114" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#1a1206" text-anchor="middle">C1</text>
+          <circle cx="395" cy="110" r="16" fill="var(--server)"/><text x="395" y="114" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#1a1206" text-anchor="middle">C2</text>
+          <circle cx="345" cy="160" r="16" fill="var(--ok)"/><text x="345" y="164" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#06180f" text-anchor="middle">C3</text>
+          <circle cx="395" cy="160" r="16" fill="var(--ok)"/><text x="395" y="164" font-family="JetBrains Mono" font-size="10" font-weight="700" fill="#06180f" text-anchor="middle">C4</text>
+        </g>
+        <text x="400" y="200" font-family="JetBrains Mono" font-size="9.5" fill="var(--server)" text-anchor="middle">in-use 2</text>
+        <text x="400" y="214" font-family="JetBrains Mono" font-size="9.5" fill="var(--ok)" text-anchor="middle">idle 2</text>
+        <!-- wait queue -->
+        <rect x="318" y="228" width="164" height="40" rx="8" fill="none" stroke="var(--accent)" stroke-dasharray="4 4" stroke-opacity=".6"/>
+        <text x="400" y="252" font-family="JetBrains Mono" font-size="10" fill="var(--accent)" text-anchor="middle">대기 큐 (connectionTimeout)</text>
+
+        <!-- DB side -->
+        <rect x="600" y="90" width="130" height="150" rx="12" fill="var(--panel-2)" stroke="var(--server)" stroke-opacity=".5"/>
+        <text x="665" y="78" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="var(--server)" text-anchor="middle">DATABASE</text>
+        <text x="665" y="170" font-family="JetBrains Mono" font-size="10.5" fill="var(--muted)" text-anchor="middle">backend</text>
+        <text x="665" y="186" font-family="JetBrains Mono" font-size="10.5" fill="var(--muted)" text-anchor="middle">process ×4</text>
+
+        <!-- arrows -->
+        <line x1="182" y1="91" x2="328" y2="110" stroke="var(--client)" stroke-width="1.6" marker-end="url(#m1)"/>
+        <text x="250" y="92" font-family="JetBrains Mono" font-size="9.5" fill="var(--client)" text-anchor="middle">borrow</text>
+        <line x1="328" y1="172" x2="182" y2="195" stroke="var(--ok)" stroke-width="1.6" marker-end="url(#m2)"/>
+        <text x="250" y="192" font-family="JetBrains Mono" font-size="9.5" fill="var(--ok)" text-anchor="middle">return + reset</text>
+        <line x1="500" y1="135" x2="598" y2="150" stroke="var(--server)" stroke-width="1.6" marker-end="url(#m3)"/>
+        <text x="548" y="130" font-family="JetBrains Mono" font-size="9.5" fill="var(--server)" text-anchor="middle">TCP 유지</text>
+
+        <defs>
+          <marker id="m1" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--client)"/></marker>
+          <marker id="m2" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--ok)"/></marker>
+          <marker id="m3" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="var(--server)"/></marker>
+        </defs>
+      </svg>
+      <figcaption><b>그림 3.</b> 스레드 4개가 연결 4개를 두고 빌리고 반납한다 — T3·T4는 큐에서 대기</figcaption>
+    </figure>
+
+    <h3>핵심 파라미터</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>파라미터 (HikariCP 기준)</th><th>의미</th><th>흔한 기본/권장</th></tr></thead>
+        <tbody>
+          <tr><td><code>maximumPoolSize</code></td><td>풀이 가질 수 있는 최대 연결 수 (상한)</td><td class="muted">10 / 06장 공식으로</td></tr>
+          <tr><td><code>minimumIdle</code></td><td>유휴 상태로 항상 유지할 최소 연결 수</td><td class="muted">max와 동일 권장(고정 크기)</td></tr>
+          <tr><td><code>connectionTimeout</code></td><td>연결을 빌리려 대기하는 최대 시간</td><td class="muted">30s → 더 짧게</td></tr>
+          <tr><td><code>idleTimeout</code></td><td>여분 유휴 연결을 닫기까지의 시간</td><td class="muted">10분</td></tr>
+          <tr><td><code>maxLifetime</code></td><td>연결을 나이로 강제 폐기하는 수명</td><td class="muted">30분 (인프라 한계−여유)</td></tr>
+          <tr><td><code>keepaliveTime</code></td><td>유휴 연결 생존 확인 핑 주기</td><td class="muted">maxLifetime보다 짧게</td></tr>
+          <tr><td><code>leakDetectionThreshold</code></td><td>연결 누수 의심 시 로그 임계치</td><td class="muted">기본 off, 운영 시 켜기</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>반납 시 리셋이 필수인 이유</b> — 이전 사용자가 <code class="k">SET</code>한 세션 변수, 미완료 트랜잭션, 임시 테이블이 남으면 다음 사용자가 오염된 상태를 물려받는다. 그래서 풀은 반납 시 깨끗한 상태로 되돌린다.</li>
+        <li><b>대기 큐의 존재 이유</b> — 상한을 두면 트래픽 폭증 시 초과 요청은 DB를 더 누르는 대신 앱 단에서 짧게 기다린다. "느린 DB"보다 "빠른 대기"가 전체적으로 낫다(→ 06장).</li>
+        <li><b>고정 크기 권장</b> — HikariCP는 <code class="k">minimumIdle</code>를 <code class="k">maximumPoolSize</code>와 같게 둬 풀을 고정 크기로 운영하길 권한다. 동적 축소·재생성의 churn과 지연 스파이크를 없애기 위함이다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 05 ===================== -->
+  <section id="s5">
+    <div class="eyebrow">05 — CONNECTION HEALTH</div>
+    <h2>연결 관리와 건강성</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>오래 보관된 풀 연결은 방화벽·LB·DB 타임아웃에 의해 조용히 죽을 수 있으므로, maxLifetime·keepalive·유효성 검사로 선제 폐기하고, 누수 탐지로 반납되지 않는 연결을 잡아낸다.</p>
+    </div>
+
+    <p class="para">풀이 연결을 재사용한다는 것은 곧 연결을 <strong>오래 살려 둔다</strong>는 뜻이고, 여기서 새로운 문제가 생긴다. 풀에 가만히 있던 연결을 중간 경로의 방화벽·NAT·클라우드 로드밸런서(흔히 350초 유휴 한계)나 DB 자체의 유휴 타임아웃(MySQL <code class="k">wait_timeout</code> 등)이 <strong>조용히 끊어버린다</strong>. 풀은 이 사실을 모른 채 멀쩡한 줄 알고 빌려주고, 빌려간 쪽은 끊긴 소켓으로 쿼리를 날리다 실패한다 — 이른바 <strong>죽은 연결(stale connection)</strong> 문제다. 이를 막기 위해 ① <code class="k">maxLifetime</code>으로 연결을 일정 나이에 선제 폐기하고(인프라가 강제하는 한계보다 몇 초 짧게 설정하는 것이 정석), ② <code class="k">keepaliveTime</code>으로 유휴 연결에 주기적 핑을 보내 생존을 확인·유지하며, ③ 빌려주기 전 <code class="k">Connection.isValid()</code>로 검사한다. 한편 빌려가서 영영 돌려주지 않는 <strong>연결 누수(leak)</strong>는 <code class="k">leakDetectionThreshold</code>로 탐지한다.</p>
+
+    <div class="note"><b>운영 정석:</b> <code class="k">maxLifetime</code> &lt; (DB·LB·방화벽이 강제하는 가장 짧은 연결 수명) − 여유(수 초). 그래야 풀이 항상 인프라보다 먼저 연결을 정리해, 인프라가 끊은 죽은 연결을 빌려주는 사고를 원천 차단한다.</div>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>네트워크는 연결의 죽음을 알려주지 않는다</b> — 중간 장비가 연결 상태를 GC하거나 RST 없이 떨어뜨리면, 양 끝단은 다음 패킷을 보내기 전까지 죽음을 모른다. 그래서 "보내보기 전 확인" 또는 "주기적 핑"이 필요하다.</li>
+        <li><b>선제 폐기 &gt; 사후 복구</b> — 죽은 연결을 잡아 재시도하는 것보다, 의심스러운 연결을 미리 버리고 새로 만드는 편이 꼬리 지연과 산발적 오류를 줄인다.</li>
+        <li><b>누수는 천천히 풀을 고갈시킨다</b> — <code class="k">try-with-resources</code> 누락 등으로 반납되지 않은 연결이 쌓이면 결국 풀이 비어 모든 요청이 <code class="k">connectionTimeout</code>에 걸린다. 누수 탐지 로그가 코드 결함을 조기에 드러낸다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 06 ===================== -->
+  <section id="s6">
+    <div class="eyebrow">06 — SIZING & OPTIMIZATION</div>
+    <h2>풀 사이징과 최적화</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>동시 요청이 많다고 풀을 키우면 컨텍스트 스위칭·락 경합으로 오히려 처리량이 떨어지므로, DB 코어 수 기반 공식으로 상한을 잡고 Little's Law로 실수요를 추정해 "작은 풀 + 대기 큐"를 지향한다.</p>
+    </div>
+
+    <p class="para">가장 반직관적인 대목이다. HikariCP 위키의 유명한 벤치마크는 <strong>연결 96개가 1000개(또는 4000개)보다 약 50배 빠를 수 있음</strong>을 보여준다. 이유는 단순하다 — DB의 실제 동시 작업 능력은 CPU 코어와 디스크에 묶여 있는데, 코어 수를 한참 넘는 연결을 던지면 그 연결들은 일을 하는 게 아니라 <strong>CPU를 두고 컨텍스트 스위칭, 락·래치 경합, 공유 버퍼 경합</strong>으로 서로를 방해한다. 그래서 처리량(TPS)은 작은 연결 수에서 정점을 찍고 그 이후엔 떨어진다. 출발점 공식은 다음과 같다.</p>
+
+    <pre><span class="c"># HikariCP 위키의 풀 사이징 공식 (출발점, 절대값 아님)</span>
+pool_size = (<span class="kw">core_count</span> × <span class="num">2</span>) + <span class="kw">effective_spindle_count</span>
+
+<span class="c"># SSD라면 effective_spindle_count ≈ 1</span>
+<span class="c">#  4-core  →  (4 × 2) + 1 =  9</span>
+<span class="c">#  8-core  →  (8 × 2) + 1 = 17</span>
+<span class="c"># 16-core  → (16 × 2) + 1 = 33</span>
+
+<span class="c"># ⚠ core_count는 "DB 서버"의 코어다 — 앱 서버/쿠버네티스 노드가 아니다</span></pre>
+
+    <figure>
+      <svg viewBox="0 0 760 320" role="img" aria-label="연결 수에 따른 처리량 곡선">
+        <!-- axes -->
+        <line x1="70" y1="270" x2="710" y2="270" stroke="var(--line)" stroke-width="1.5"/>
+        <line x1="70" y1="40" x2="70" y2="270" stroke="var(--line)" stroke-width="1.5"/>
+        <text x="390" y="305" font-family="JetBrains Mono" font-size="12" fill="var(--muted)" text-anchor="middle">연결 수 →</text>
+        <text x="28" y="155" font-family="JetBrains Mono" font-size="12" fill="var(--muted)" text-anchor="middle" transform="rotate(-90 28 155)">처리량 (TPS)</text>
+
+        <!-- curve: rises to peak ~ x=190, then declines -->
+        <path d="M70,255 C120,210 150,90 200,80 C300,62 360,150 480,200 C580,238 650,250 710,255"
+              fill="none" stroke="var(--client)" stroke-width="3"/>
+        <!-- peak marker -->
+        <line x1="200" y1="80" x2="200" y2="270" stroke="var(--ok)" stroke-width="1.2" stroke-dasharray="4 4"/>
+        <circle cx="200" cy="80" r="6" fill="var(--ok)"/>
+        <text x="200" y="58" font-family="JetBrains Mono" font-size="11.5" font-weight="700" fill="var(--ok)" text-anchor="middle">sweet spot</text>
+        <text x="200" y="290" font-family="JetBrains Mono" font-size="10.5" fill="var(--ok)" text-anchor="middle">≈ 공식값</text>
+
+        <!-- danger zone -->
+        <rect x="430" y="40" width="280" height="230" fill="var(--danger)" opacity=".06"/>
+        <text x="570" y="120" font-family="JetBrains Mono" font-size="11.5" fill="var(--danger)" text-anchor="middle">연결 과다 →</text>
+        <text x="570" y="138" font-family="JetBrains Mono" font-size="11.5" fill="var(--danger)" text-anchor="middle">컨텍스트 스위칭·락 경합</text>
+        <text x="570" y="156" font-family="JetBrains Mono" font-size="11.5" fill="var(--danger)" text-anchor="middle">처리량 하락</text>
+
+        <!-- low zone -->
+        <text x="120" y="240" font-family="JetBrains Mono" font-size="10.5" fill="var(--faint)" text-anchor="middle">과소</text>
+      </svg>
+      <figcaption><b>그림 4.</b> 처리량은 작은 연결 수에서 정점을 찍고, 그 이후엔 경합으로 하락한다 — "크게 = 빠르게"가 아니다</figcaption>
+    </figure>
+
+    <h3>Little's Law로 실수요 추정</h3>
+    <p class="para">공식이 <strong>상한</strong>을 준다면, Little's Law는 <strong>실제로 필요한 동시 연결 수</strong>를 추정해 준다. <code class="k">L = λ × W</code> (평균 동시 처리 수 = 도착률 × 서비스 시간).</p>
+    <pre><span class="c"># 예: 초당 500 요청, 쿼리 평균 지연 10ms</span>
+L = λ × W = <span class="num">500</span> req/s × <span class="num">0.010</span> s = <span class="num">5</span>
+
+<span class="c"># 평균적으로 동시에 5개 연결이면 수요를 감당한다는 추정.</span>
+<span class="c"># 여기에 변동 대비 여유를 약간 더해 풀 크기를 정하고,</span>
+<span class="c"># CPU 공식이 준 상한을 절대 넘기지 않는다.</span></pre>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>병렬성은 코어 수로 묶여 있다</b> — N개 코어는 동시에 N개 작업만 실제로 진행한다. 연결이 그보다 많으면 나머지는 OS 스케줄러에서 대기하며 스위칭 비용만 늘린다.</li>
+        <li><b>대기 위치를 바꾸는 것이 핵심</b> — 어차피 기다려야 한다면, 비싸고 경합이 큰 DB 내부가 아니라 가볍고 빠른 앱 단의 풀 큐에서 기다리게 한다. 그래서 "작은 풀 + 큐"가 "큰 풀"을 이긴다.</li>
+        <li><b>여러 서비스가 한 DB를 공유할 때</b> — 각 서비스 풀의 합이 DB의 <code class="k">max_connections</code> 예산 안에 들어와야 한다. 서비스별로 풀을 무작정 키우면 합산이 DB를 무너뜨린다(→ 07장).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== 07 ===================== -->
+  <section id="s7">
+    <div class="eyebrow">07 — EXTERNAL POOLER & MULTIPLEXING</div>
+    <h2>외부 풀러와 다중화</h2>
+
+    <div class="summary">
+      <span class="tag">▍한 줄 요약</span>
+      <p>인앱 풀이 한 앱의 연결 churn을 줄인다면, pgbouncer 같은 외부 풀러는 클라이언트-프록시-서버 구조로 수천 개의 클라이언트 연결을 소수의 서버 연결로 다중화해 DB 전체의 연결 수를 보호한다.</p>
+    </div>
+
+    <p class="para">인앱 풀(HikariCP 등)은 <strong>앱 인스턴스 하나</strong>의 관점이다. 하지만 마이크로서비스 N개가 각자 풀 10개를 들면 DB는 수백 연결을 받고, 서버리스(Lambda)는 동시 실행 수만큼 연결을 폭증시킨다. 이때 <strong>pgbouncer</strong> 같은 외부 풀러가 앱과 DB 사이에 프록시로 들어가, 클라이언트 쪽으로는 많은 연결을 받아주면서 서버 쪽으로는 적은 수의 실제 연결만 유지해 둘을 <strong>다중화(multiplexing)</strong>한다. 즉 "클라이언트 연결의 수명"과 "서버 연결의 수명"을 분리한다. 다중화 정도는 <strong>풀링 모드</strong>로 결정된다.</p>
+
+    <div class="legend">
+      <span><i style="background:var(--client)"></i>클라이언트 연결 (많음)</span>
+      <span><i style="background:var(--accent)"></i>pgbouncer 프록시</span>
+      <span><i style="background:var(--server)"></i>서버 연결 (적음)</span>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 280" role="img" aria-label="pgbouncer 다중화: 많은 클라이언트 연결을 소수의 서버 연결로">
+        <text x="95" y="28" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="var(--client)" text-anchor="middle">클라이언트들</text>
+        <text x="380" y="28" font-family="JetBrains Mono" font-size="12" font-weight="800" fill="var(--accent)" text-anchor="middle">PGBOUNCER</text>
+        <text x="665" y="28" font-family="JetBrains Mono" font-size="12" font-weight="700" fill="var(--server)" text-anchor="middle">PostgreSQL</text>
+
+        <!-- many clients -->
+        <g fill="var(--client)">
+          <circle cx="60" cy="60" r="9"/><circle cx="95" cy="60" r="9"/><circle cx="130" cy="60" r="9"/>
+          <circle cx="60" cy="95" r="9"/><circle cx="95" cy="95" r="9"/><circle cx="130" cy="95" r="9"/>
+          <circle cx="60" cy="130" r="9"/><circle cx="95" cy="130" r="9"/><circle cx="130" cy="130" r="9"/>
+          <circle cx="60" cy="165" r="9"/><circle cx="95" cy="165" r="9"/><circle cx="130" cy="165" r="9"/>
+          <circle cx="60" cy="200" r="9"/><circle cx="95" cy="200" r="9"/><circle cx="130" cy="200" r="9"/>
+        </g>
+        <text x="95" y="232" font-family="JetBrains Mono" font-size="10.5" fill="var(--faint)" text-anchor="middle">~수천 연결</text>
+
+        <!-- proxy box -->
+        <rect x="300" y="55" width="160" height="160" rx="14" fill="var(--panel)" stroke="var(--accent)" stroke-opacity=".6"/>
+        <text x="380" y="130" font-family="JetBrains Mono" font-size="11" fill="var(--muted)" text-anchor="middle">연결 수명</text>
+        <text x="380" y="148" font-family="JetBrains Mono" font-size="11" fill="var(--muted)" text-anchor="middle">분리·다중화</text>
+
+        <!-- few server conns -->
+        <g fill="var(--server)">
+          <circle cx="640" cy="100" r="11"/><circle cx="690" cy="100" r="11"/>
+          <circle cx="640" cy="150" r="11"/><circle cx="690" cy="150" r="11"/>
+        </g>
+        <text x="665" y="200" font-family="JetBrains Mono" font-size="10.5" fill="var(--faint)" text-anchor="middle">~코어 공식값</text>
+
+        <!-- many lines into proxy -->
+        <g stroke="var(--client)" stroke-width="1" opacity=".5">
+          <line x1="139" y1="60" x2="300" y2="95"/><line x1="139" y1="95" x2="300" y2="110"/>
+          <line x1="139" y1="130" x2="300" y2="135"/><line x1="139" y1="165" x2="300" y2="160"/>
+          <line x1="139" y1="200" x2="300" y2="175"/>
+        </g>
+        <!-- few lines out -->
+        <g stroke="var(--server)" stroke-width="1.8">
+          <line x1="460" y1="110" x2="628" y2="100"/><line x1="460" y1="130" x2="628" y2="150"/>
+        </g>
+
+        <text x="380" y="262" font-family="JetBrains Mono" font-size="11" font-weight="700" fill="var(--text)" text-anchor="middle">많은 클라이언트 연결  ⟶  소수의 서버 연결</text>
+      </svg>
+      <figcaption><b>그림 5.</b> 외부 풀러는 클라이언트 연결 수와 무관하게 DB가 받는 연결 수를 작게 유지한다</figcaption>
+    </figure>
+
+    <h3>pgbouncer 풀링 모드</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>모드</th><th>서버 연결을 점유하는 기간</th><th>다중화</th><th>제약</th></tr></thead>
+        <tbody>
+          <tr><td><code>session</code></td><td>클라이언트 세션 전체 (연결 종료까지)</td><td class="muted">가장 낮음</td><td class="muted">가장 안전, 모든 세션 기능 호환</td></tr>
+          <tr><td><code>transaction</code></td><td>트랜잭션 동안만 (commit/rollback에 반납)</td><td class="muted">높음 · 웹앱 표준</td><td class="muted">세션 단위 기능 깨짐(아래)</td></tr>
+          <tr><td><code>statement</code></td><td>문장 하나 실행 후 즉시 반납</td><td class="muted">가장 높음</td><td class="muted">autocommit 강제, 멀티문 트랜잭션 불가</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note"><b>transaction 모드 주의:</b> 연속된 두 트랜잭션이 같은 서버 연결로 간다는 보장이 없으므로, 세션에 묶이는 기능 — 일반 <code class="k">PREPARE</code>/prepared statement, <code class="k">LISTEN/NOTIFY</code>, 세션 단위 advisory lock, <code class="k">WITH HOLD</code> 커서, 전역 <code class="k">SET</code> — 이 깨진다. <code class="k">SET LOCAL</code>처럼 트랜잭션 범위로 쓰거나, 애플리케이션이 모드에 협조해야 한다.</div>
+
+    <div class="why">
+      <div class="why-h">근거 / WHY</div>
+      <ul>
+        <li><b>계층이 다르다</b> — 인앱 풀(HikariCP)과 외부 풀러(pgbouncer)는 경쟁 관계가 아니라 다른 계층이다. 실무에선 <code class="k">앱 풀 → pgbouncer → DB</code>로 함께 쓰며, 외부 풀러가 DB의 전체 연결 예산을 지킨다.</li>
+        <li><b>transaction 모드가 보통 정답인 이유</b> — 웹앱은 트랜잭션 사이에 비-DB 작업으로 연결을 놀린다. 트랜잭션 단위 반납은 이 유휴 시간을 회수해 적은 서버 연결로 많은 클라이언트를 감당하게 한다.</li>
+        <li><b>서버리스의 구원자</b> — Lambda처럼 연결 churn이 극심한 환경에서는 외부 풀러(또는 RDS Proxy)가 사실상 필수다. 인보케이션이 폭증해도 DB가 받는 실제 연결 수를 일정하게 묶어준다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================== QUIZ ===================== -->
+  <section id="quiz" class="quizhead">
+    <div class="eyebrow">★ — SELF CHECK</div>
+    <h2>지식 습득 확인 문제</h2>
+    <p class="para" style="color:var(--muted)">각 문항을 먼저 스스로 답해 본 뒤 <strong>모범답안 보기</strong>를 눌러 확인하세요. 정답은 토글로 별도 노출됩니다.</p>
+
+    <details class="q">
+      <summary><span class="qn">Q1</span><span>DB에 "연결한다"는 것을 OS·네트워크 수준에서 설명하고, 첫 쿼리를 보내기까지 어떤 단계들을 거치는지 순서대로 기술하라.</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>OS 수준에서는 (클라이언트 IP·포트, 서버 IP·포트) 4-튜플로 식별되는 TCP 소켓을 하나 여는 것이다. 단계는 ① TCP 3-way handshake(SYN → SYN-ACK → ACK)로 신뢰성 통로 수립(1 RTT), ② (TLS 사용 시) TLS 핸드셰이크(+1~2 RTT), ③ DB 프로토콜 핸드셰이크 — 예: PostgreSQL <code class="k">StartupMessage</code> → 인증 챌린지(SCRAM-SHA-256) 왕복 → <code class="k">AuthenticationOk</code>/<code class="k">ParameterStatus</code>/<code class="k">ReadyForQuery</code>. 이 전부가 끝난 뒤에야 첫 쿼리를 보낼 수 있어, 총 4~6회의 왕복이 발생할 수 있다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q2</span><span>"DB 연결 비용은 곧 TCP 핸드셰이크 비용이다"라는 주장의 어디가 불완전한가?</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>두 가지가 빠졌다. 첫째, 수립 비용은 TCP 1 RTT만이 아니라 TLS와 DB 인증·세션 초기화까지 합한 여러 왕복이다. 둘째이자 더 중요한 점은 <strong>유지 비용</strong>이다. PostgreSQL은 연결마다 OS 프로세스를 fork하고(MySQL은 스레드) 메모리·슬롯을 점유하므로, 연결이 놀고 있어도 자원을 먹고 <code class="k">max_connections</code> 한계에 부딪힌다. 즉 비용은 "한 번의 핸드셰이크"가 아니라 "수립 + 살아있는 동안 내내의 유지"다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q3</span><span>풀을 사용하는 코드에서 <code class="k">connection.close()</code>를 호출하면 실제로 무슨 일이 일어나는가?</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>TCP 연결을 실제로 끊는 것이 아니라 <strong>연결을 풀에 반납</strong>한다. 풀은 반납받은 연결의 세션 상태를 리셋(열린 트랜잭션 롤백, 세션 변수 초기화)한 뒤 유휴(idle) 상태로 되돌려 다음 요청이 재사용하게 한다. 핸드셰이크·인증 같은 비싼 비용은 다시 치르지 않는다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q4</span><span>풀이 가득 찼는데(=maximumPoolSize 도달) 새 요청이 연결을 빌리려 하면 어떻게 처리되는가?</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>새 연결을 만들지 않고 <strong>대기 큐</strong>에서 <code class="k">connectionTimeout</code>만큼 기다린다. 그 안에 다른 사용자가 연결을 반납하면 그것을 받아 진행하고, 시간 내에 확보하지 못하면 예외(타임아웃)를 던진다. 이렇게 상한을 둠으로써 트래픽 폭증이 DB의 연결 수 폭증으로 번지는 것을 막는다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q5</span><span>오래 유지된 풀 연결이 "죽은 연결(stale connection)"이 되는 메커니즘과, 이를 막기 위한 설정을 설명하라.</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>중간 경로의 방화벽·NAT·로드밸런서(흔히 350초 유휴 한계)나 DB의 유휴 타임아웃이 풀에 보관 중인 연결의 TCP를 조용히 끊지만, 풀은 이를 모른 채 빌려준다. 빌린 쪽은 끊긴 소켓으로 쿼리하다 실패한다. 대책은 ① <code class="k">maxLifetime</code>으로 연결을 일정 나이에 선제 폐기(인프라 한계보다 몇 초 짧게), ② <code class="k">keepaliveTime</code> 핑으로 생존 확인·유지, ③ 빌려주기 전 <code class="k">isValid()</code> 유효성 검사다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q6</span><span>"동시 요청이 1,000개니까 풀도 1,000개로 키우자"가 왜 틀린 전략인지, 무슨 일이 벌어지는지 설명하라.</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>DB의 실제 병렬 처리 능력은 CPU 코어·디스크에 묶여 있다. 코어 수를 한참 넘는 연결은 일을 하기보다 CPU를 두고 <strong>컨텍스트 스위칭, 락·래치 경합, 공유 버퍼 경합</strong>으로 서로를 방해한다. 그래서 처리량(TPS)은 작은 연결 수에서 정점을 찍고 그 이후엔 떨어진다(HikariCP 벤치마크: 96개가 1,000~4,000개보다 ~50배 빠른 사례). 올바른 전략은 작은 풀로 상한을 두고, 초과 요청은 가벼운 앱 단 큐에서 짧게 기다리게 하는 것이다.</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q7</span><span>DB 서버가 8코어(SSD)이고, 측정 결과 초당 800요청·쿼리 평균 5ms다. (a) 공식 상한과 (b) Little's Law 수요를 각각 계산하고 풀 크기를 제안하라.</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>(a) 공식 상한: <code class="k">(8 × 2) + 1 = 17</code>. (b) Little's Law: <code class="k">L = 800 × 0.005 = 4</code> → 평균 약 4개 연결이면 수요를 감당. 따라서 실수요(≈4)에 변동 대비 여유를 약간 더하되, 공식 상한 17을 넘기지 않는 선 — 예컨대 <strong>8~12 정도</strong>가 합리적 출발점이다. 부하 테스트로 acquire 대기 시간과 TPS를 보며 미세 조정한다. (이 코어 수는 앱 서버가 아니라 DB 서버 기준임에 유의.)</p>
+      </div>
+    </details>
+
+    <details class="q">
+      <summary><span class="qn">Q8</span><span>pgbouncer의 transaction 모드와 session 모드의 핵심 차이는? 고동시성 웹앱에 transaction 모드를 쓸 때 주의할 점은?</span><span class="reveal">모범답안 보기</span></summary>
+      <div class="answer">
+        <div class="alabel">모범답안</div>
+        <p>session 모드는 서버 연결을 클라이언트 세션 전체 동안 점유해 가장 안전하지만 다중화가 적다. transaction 모드는 트랜잭션 동안만 점유하고 commit/rollback 시 반납하므로, 트랜잭션 사이 유휴 시간을 회수해 적은 서버 연결로 많은 클라이언트를 감당한다(웹앱 표준). 단, 연속 트랜잭션이 같은 서버 연결로 간다는 보장이 없어 <strong>세션 단위 기능</strong> — 일반 prepared statement/<code class="k">PREPARE</code>, <code class="k">LISTEN/NOTIFY</code>, 세션 advisory lock, <code class="k">WITH HOLD</code> 커서, 전역 <code class="k">SET</code> — 이 깨진다. <code class="k">SET LOCAL</code> 사용, 프로토콜 수준 prepared statement 지원 설정, 짧은 트랜잭션 설계 등으로 모드에 협조해야 한다.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ===================== FOOTER ===================== -->
+  <footer>
+    <h2 style="font-family:var(--mono)">참고 자료</h2>
+    <ul class="refs">
+      <li><a href="https://www.rfc-editor.org/rfc/rfc9293" target="_blank" rel="noopener">RFC 9293 — Transmission Control Protocol (TCP)</a><span>3-way handshake·연결 상태 등 TCP의 표준 정의</span></li>
+      <li><a href="https://www.postgresql.org/docs/current/protocol.html" target="_blank" rel="noopener">PostgreSQL Docs — Frontend/Backend Protocol</a><span>StartupMessage·인증·ReadyForQuery 등 연결 프로토콜</span></li>
+      <li><a href="https://www.postgresql.org/docs/current/runtime-config-connection.html" target="_blank" rel="noopener">PostgreSQL Docs — Connection Settings (max_connections 등)</a><span>process-per-connection 모델과 연결 한계</span></li>
+      <li><a href="https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing" target="_blank" rel="noopener">HikariCP Wiki — About Pool Sizing</a><span>사이징 공식과 "96 vs 1000 연결" 벤치마크의 출처</span></li>
+      <li><a href="https://github.com/brettwooldridge/HikariCP" target="_blank" rel="noopener">HikariCP — README (설정 파라미터)</a><span>maxLifetime·keepaliveTime·leakDetectionThreshold 등</span></li>
+      <li><a href="https://vladmihalcea.com/optimal-connection-pool-size/" target="_blank" rel="noopener">Vlad Mihalcea — Optimal Connection Pool Size</a><span>Little's Law 적용과 작은 풀의 우위에 대한 실험</span></li>
+      <li><a href="https://www.pgbouncer.org/features.html" target="_blank" rel="noopener">PgBouncer — Features (풀링 모드)</a><span>session·transaction·statement 모드와 호환성 표</span></li>
+      <li><a href="https://www.pgbouncer.org/config.html" target="_blank" rel="noopener">PgBouncer — Configuration</a><span>pool_mode·server_reset_query 등 동작 세부</span></li>
+    </ul>
+    <p class="sig">DB Connection Knowledge · TCP → Pool → Management → Optimization</p>
+  </footer>
+
+</div>
+</body>
+</html>
